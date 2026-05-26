@@ -75,14 +75,8 @@ echo "Target:  $DEMO_DIR"
 echo "--------------------------------------------------------"
 
 # 1. Validation & Dependency Checks
-# ... (rest of validation)
 if [[ -z "$PROJECT_ID" ]]; then
   echo "❌ Error: PROJECT_ID is not set. Use --project flag or 'gcloud config set project <PROJECT_ID>'"
-  exit 1
-fi
-
-if [[ ! -d "$DEMO_DIR" ]]; then
-  echo "❌ Error: Directory $DEMO_DIR not found. Please ensure you are in the cloud-assist root."
   exit 1
 fi
 
@@ -96,6 +90,24 @@ check_dependency() {
 check_dependency "gcloud"
 check_dependency "terraform"
 check_dependency "kubectl"
+check_dependency "git"
+
+# Ensure we are in the root of the repository (should contain .git)
+if [[ ! -d ".git" ]]; then
+  echo "❌ Error: .git directory not found. Please run this script from the root of the repository."
+  exit 1
+fi
+
+# Ensure submodule is initialized
+if [[ ! -d "$DEMO_DIR/terraform" ]]; then
+  echo "📦 Submodule $DEMO_DIR is missing or not initialized. Attempting to initialize..."
+  if git submodule update --init --recursive; then
+    echo "✅ Submodule initialized successfully."
+  else
+    echo "❌ Error: Failed to initialize submodule. Please run 'git submodule update --init --recursive' manually."
+    exit 1
+  fi
+fi
 
 # 2. Enable Required APIs
 # We enable these early to avoid race conditions in Terraform

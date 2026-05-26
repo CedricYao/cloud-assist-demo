@@ -15,14 +15,21 @@ The scripts in this directory automate the lifecycle of a GKE Autopilot cluster 
 
 ## Quickstart
 
-### 1. Configure Project
+### 1. Initialize Submodules
+This repository uses git submodules. Ensure they are initialized and updated before deploying:
+
+```bash
+git submodule update --init --recursive
+```
+
+### 2. Configure Project
 Ensure your local `gcloud` context is set to the correct project:
 
 ```bash
 gcloud config set project [YOUR_PROJECT_ID]
 ```
 
-### 2. Deploy the Environment
+### 3. Deploy the Environment
 Run the deployment script. This will enable necessary APIs, provision a GKE Autopilot cluster via Terraform, configure **Cloud Service Mesh (CSM)**, and deploy the application with Istio sidecar injection enabled.
 
 ```bash
@@ -31,7 +38,7 @@ Run the deployment script. This will enable necessary APIs, provision a GKE Auto
 
 *By default, this deploys to `us-central1` with the cluster name `online-boutique-demo` in the `online-boutique-demo` namespace.*
 
-### 3. Check Status
+### 4. Check Status
 Monitor the health of your deployment, verify service mesh status, and get the external IP for the Istio Gateway:
 
 ```bash
@@ -48,7 +55,7 @@ Once the deployment is complete, the application will be accessible via the **Is
 
 *Note: It may take 3-7 minutes for the Cloud Service Mesh to be provisioned and the External IP to be assigned to the Gateway after the first deployment.*
 
-### 4. Monitoring & Alerting (Optional)
+### 5. Monitoring & Alerting (Optional)
 You can set up a Google Cloud Monitoring alert policy to detect failures in the cluster, such as container crashes or node failures. This is highly recommended for the Reliability demo.
 
 ```bash
@@ -63,7 +70,7 @@ You can set up a Google Cloud Monitoring alert policy to detect failures in the 
 > 
 > ![Activate Proactive Agents](./proactive_alert.jpg)
 
-### 5. Cleanup
+### 6. Cleanup
 To avoid ongoing costs, tear down the infrastructure when finished. Note that this will also remove the Service Mesh configuration, fleet registration, and any custom alert policies:
 
 ```bash
