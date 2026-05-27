@@ -78,15 +78,15 @@ echo ""
 
 # 2.4 Check for Load Generator Scaling
 echo "📈 Checking Load Generator Status..."
-LG_USERS=$(kubectl get deployment loadgenerator -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="USERS")].value}' 2>/dev/null || echo "100")
-LG_RATE=$(kubectl get deployment loadgenerator -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATE")].value}' 2>/dev/null || echo "10")
+LG_USERS=$(kubectl get deployment loadgenerator -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="USERS")].value}' 2>/dev/null || echo "10")
+LG_RATE=$(kubectl get deployment loadgenerator -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RATE")].value}' 2>/dev/null || echo "1")
 
-if [[ "$LG_USERS" != "100" ]] || [[ "$LG_RATE" != "10" ]]; then
+if [[ "$LG_USERS" != "10" ]] || [[ "$LG_RATE" != "1" ]]; then
   echo "  ⚠️  LOAD: Load generator is Scaled UP."
-  echo "      - Target Users: $LG_USERS (default: 100)"
-  echo "      - Spawn Rate:   $LG_RATE (default: 10)"
+  echo "      - Target Users: $LG_USERS (default: 10)"
+  echo "      - Spawn Rate:   $LG_RATE (default: 1)"
 else
-  echo "  ✅ Load generator is running at default capacity (100 users)."
+  echo "  ✅ Load generator is running at default capacity (10 users)."
 fi
 echo ""
 

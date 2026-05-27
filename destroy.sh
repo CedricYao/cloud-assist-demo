@@ -84,7 +84,16 @@ if [[ ! -d "$DEMO_DIR" ]]; then
   exit 1
 fi
 
-pushd "$DEMO_DIR/terraform" > /dev/null
+# Determine which terraform directory to use
+if [[ -d "tmp-terraform" ]]; then
+  TF_DIR="tmp-terraform"
+  EXTRA_ARGS="-var=filepath_manifest=../microservices-demo/kustomize/"
+else
+  TF_DIR="$DEMO_DIR/terraform"
+  EXTRA_ARGS=""
+fi
+
+pushd "$TF_DIR" > /dev/null
 
 # Destroy infrastructure
 terraform destroy \
@@ -92,9 +101,16 @@ terraform destroy \
   -var="name=${CLUSTER_NAME}" \
   -var="region=${REGION}" \
   -var="memorystore=${ENABLE_MEMORYSTORE}" \
+  $EXTRA_ARGS \
   -auto-approve
 
 popd > /dev/null
+
+# Clean up tmp-terraform
+if [[ -d "tmp-terraform" ]]; then
+  echo "🧹 Cleaning up temporary Terraform directory..."
+  rm -rf tmp-terraform
+fi
 
 echo "--------------------------------------------------------"
 echo "✅ Destruction Complete!"

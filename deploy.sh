@@ -149,10 +149,102 @@ gcloud compute networks subnets update default \
 echo "✅ Private Google Access enabled."
 
 # 3. Terraform Deployment
-echo "🏗️  Initializing and applying Terraform..."
-pushd "$DEMO_DIR/terraform" > /dev/null
+echo "🏗️  Preparing temporary Terraform directory..."
+TMP_TF_DIR="tmp-terraform"
+
+# Preserve state if it exists to avoid losing track of the GKE cluster
+STATE_BACKUP_DIR="tf-state-backup"
+rm -rf "$STATE_BACKUP_DIR"
+if [[ -d "$TMP_TF_DIR" ]]; then
+  echo "💾 Backing up existing Terraform state..."
+  mkdir -p "$STATE_BACKUP_DIR"
+  [ -f "$TMP_TF_DIR/terraform.tfstate" ] && cp "$TMP_TF_DIR/terraform.tfstate" "$STATE_BACKUP_DIR/"
+  [ -d "$TMP_TF_DIR/.terraform" ] && cp -r "$TMP_TF_DIR/.terraform" "$STATE_BACKUP_DIR/"
+  [ -f "$TMP_TF_DIR/.terraform.lock.hcl" ] && cp "$TMP_TF_DIR/.terraform.lock.hcl" "$STATE_BACKUP_DIR/"
+fi
+
+rm -rf "$TMP_TF_DIR"
+mkdir -p "$TMP_TF_DIR"
+cp -r "$DEMO_DIR/terraform/"* "$TMP_TF_DIR/"
+
+# Restore state if we backed it up
+if [[ -d "$STATE_BACKUP_DIR" ]]; then
+  echo "💾 Restoring Terraform state from backup..."
+  [ -f "$STATE_BACKUP_DIR/terraform.tfstate" ] && cp "$STATE_BACKUP_DIR/terraform.tfstate" "$TMP_TF_DIR/"
+  [ -d "$STATE_BACKUP_DIR/.terraform" ] && cp -r "$STATE_BACKUP_DIR/.terraform" "$TMP_TF_DIR/"
+  [ -f "$STATE_BACKUP_DIR/.terraform.lock.hcl" ] && cp "$STATE_BACKUP_DIR/.terraform.lock.hcl" "$TMP_TF_DIR/"
+  rm -rf "$STATE_BACKUP_DIR"
+fi
+
+echo "🔧 Customizing Terraform for Private GKE Cluster and Namespace..."
+python3 -c '
+with open("tmp-terraform/main.tf", "r") as f:
+    content = f.read()
+
+# Add private_cluster_config to GKE cluster
+old_autopilot = "enable_autopilot = true"
+new_autopilot = """enable_autopilot = true
+
+  # Explicitly specify network and subnetwork (required for private Autopilot)
+  network    = "default"
+  subnetwork = "default"
+
+  # Enable private nodes (required by org policy)
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "172.16.0.0/28"
+  }"""
+content = content.replace(old_autopilot, new_autopilot)
+
+# Set deletion_protection to false to allow future destruction
+content = content.replace("# deletion_protection = false", "deletion_protection = false")
+
+# Fix namespace creation in apply_deployment
+old_apply = "kubectl apply -k ${var.filepath_manifest} -n ${var.namespace}"
+new_apply = "kubectl create namespace ${var.namespace} --dry-run=client -o yaml | kubectl apply -f - && kubectl apply -k ${var.filepath_manifest} -n ${var.namespace}"
+content = content.replace(old_apply, new_apply)
+
+# Fix wait_conditions to avoid failing on missing metrics API service in Autopilot
+old_wait = "kubectl wait --for=condition=AVAILABLE apiservice/v1beta1.metrics.k8s.io --timeout=180s"
+new_wait = "# kubectl wait --for=condition=AVAILABLE apiservice/v1beta1.metrics.k8s.io --timeout=180s"
+content = content.replace(old_wait, new_wait)
+
+with open("tmp-terraform/main.tf", "w") as f:
+    f.write(content)
+'
+
+python3 -c '
+import os
+if os.path.exists("tmp-terraform/memorystore.tf"):
+    with open("tmp-terraform/memorystore.tf", "r") as f:
+        content = f.read()
+    content = content.replace("../kustomize/", "../microservices-demo/kustomize/")
+    with open("tmp-terraform/memorystore.tf", "w") as f:
+        f.write(content)
+'
+
+pushd "$TMP_TF_DIR" > /dev/null
 
 terraform init
+
+# Self-healing: If the cluster exists on GCP but is not in the Terraform state (orphaned),
+# import it to avoid Error 409 (Already Exists) conflicts.
+if gcloud container clusters describe "${CLUSTER_NAME}" --region="${REGION}" --project="${PROJECT_ID}" &>/dev/null; then
+  echo "🌐 Cluster '${CLUSTER_NAME}' exists on GCP."
+  if ! terraform state show google_container_cluster.my_cluster &>/dev/null; then
+    echo "📥 Importing existing GKE cluster into Terraform state to reconcile..."
+    terraform import \
+      -var="gcp_project_id=${PROJECT_ID}" \
+      -var="name=${CLUSTER_NAME}" \
+      -var="region=${REGION}" \
+      -var="namespace=${NAMESPACE}" \
+      -var="memorystore=${ENABLE_MEMORYSTORE}" \
+      -var="filepath_manifest=../microservices-demo/kustomize/" \
+      google_container_cluster.my_cluster \
+      "projects/${PROJECT_ID}/locations/${REGION}/clusters/${CLUSTER_NAME}"
+  fi
+fi
 
 terraform apply \
   -var="gcp_project_id=${PROJECT_ID}" \
@@ -160,6 +252,7 @@ terraform apply \
   -var="region=${REGION}" \
   -var="namespace=${NAMESPACE}" \
   -var="memorystore=${ENABLE_MEMORYSTORE}" \
+  -var="filepath_manifest=../microservices-demo/kustomize/" \
   -auto-approve
 
 popd > /dev/null
@@ -188,6 +281,45 @@ echo "   - Labeling namespace '$NAMESPACE' for ASM injection..."
 gcloud container clusters get-credentials "${CLUSTER_NAME}" --region="${REGION}" --project="${PROJECT_ID}"
 kubectl label namespace "${NAMESPACE}" istio.io/rev=asm-managed --overwrite
 
+# Wait for managed Service Mesh control plane to be ACTIVE to prevent race conditions during pod injection
+echo "   - Waiting for Cloud Service Mesh control plane to be fully active..."
+MAX_MESH_RETRIES=30
+MESH_RETRY=0
+MESH_READY=false
+
+while [ "$MESH_READY" = "false" ] && [ $MESH_RETRY -lt $MAX_MESH_RETRIES ]; do
+  MESH_JSON=$(gcloud container fleet mesh describe --project="${PROJECT_ID}" --format=json 2>/dev/null || echo "{}")
+  if echo "$MESH_JSON" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    states = data.get("membershipStates", {})
+    for k, v in states.items():
+        mesh = v.get("servicemesh", {})
+        cp = mesh.get("controlPlaneManagement", {})
+        if cp.get("state") == "ACTIVE":
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+' 2>/dev/null; then
+    MESH_READY=true
+    echo "     ✅ Cloud Service Mesh control plane is active."
+  else
+    echo "     Waiting for Service Mesh activation ($((MESH_RETRY+1))/$MAX_MESH_RETRIES)..."
+    sleep 10
+    ((MESH_RETRY++))
+  fi
+done
+
+if [ "$MESH_READY" = "false" ]; then
+  echo "     ⚠️  Warning: Service Mesh took too long to activate. Sidecar injection might be delayed."
+fi
+
+# Disable sidecar injection for loadgenerator to prevent the init container network-interception deadlock
+echo "   - Disabling service mesh sidecar for loadgenerator (prevents startup deadlock)..."
+kubectl patch deployment loadgenerator -n "$NAMESPACE" -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/inject":"false"}}}}}'
+
 # Restart pods to trigger injection and pick up mesh config
 echo "   - Restarting pods to enable sidecar injection..."
 kubectl rollout restart deployment -n "$NAMESPACE"
@@ -205,6 +337,11 @@ RETRY_COUNT=0
 while [ -z "$EXTERNAL_IP" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
   # Check for Istio Gateway address (Gateway API)
   EXTERNAL_IP=$(kubectl get gateway istio-gateway -n "${NAMESPACE}" -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)
+  
+  # Fallback to frontend-external LoadBalancer Service if Gateway is not used
+  if [ -z "$EXTERNAL_IP" ]; then
+    EXTERNAL_IP=$(kubectl get service frontend-external -n "${NAMESPACE}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+  fi
   
   if [ -z "$EXTERNAL_IP" ]; then
     echo "Waiting for External IP ($((RETRY_COUNT+1))/$MAX_RETRIES)..."

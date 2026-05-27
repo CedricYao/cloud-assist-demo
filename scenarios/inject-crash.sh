@@ -37,8 +37,22 @@ echo "--------------------------------------------------------"
 # Patch deployment with an invalid environment variable or command to cause crash
 # Here we change the PORT to a privileged one that the non-root user cannot bind to,
 # OR we can just set an invalid PORT string.
+# 1. Scale down to 0 to terminate all healthy pods and flush old replica sets
+echo "🧹 Scaling down paymentservice to 0 to flush old pods..."
+kubectl scale deployment paymentservice --replicas=0 -n "$NAMESPACE"
+
+# Wait for the pods to be terminated to prevent GKE race conditions
+echo "⏳ Waiting for old pods to terminate..."
+kubectl wait --for=delete pod -l app=paymentservice --timeout=30s -n "$NAMESPACE" || true
+
+# 2. Patch the deployment with the invalid port
+echo "🔧 Patching paymentservice with invalid configuration..."
 kubectl patch deployment paymentservice -n "$NAMESPACE" --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/env/0/value", "value":"INVALID_PORT"}]'
 
-echo "✅ Payment Service patched with invalid configuration."
-echo "Symptoms: Deployment in CrashLoopBackOff. Checkout will fail."
+# 3. Scale back up to 1 to force GKE to only run the crashing configuration
+echo "🚀 Scaling back up to 1 to trigger the crash loop..."
+kubectl scale deployment paymentservice --replicas=1 -n "$NAMESPACE"
+
+echo "✅ Payment Service patched and scaled."
+echo "Symptoms: Deployment in CrashLoopBackOff. Checkout will fail immediately."
 echo "--------------------------------------------------------"
