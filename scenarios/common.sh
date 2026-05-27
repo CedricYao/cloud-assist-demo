@@ -21,7 +21,7 @@
 # Default values
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "")
 REGION="us-central1"
-CLUSTER_NAME="online-boutique-demo"
+CLUSTER_NAME=""
 NAMESPACE="online-boutique-demo"
 
 # Function to display help for common options
@@ -29,7 +29,7 @@ show_common_help() {
   echo "Common Options:"
   echo "  --project=ID       GCP Project ID (default: active gcloud project)"
   echo "  --region=NAME      GCP Region (default: us-central1)"
-  echo "  --cluster=NAME     GKE Cluster Name (default: online-boutique-demo)"
+  echo "  --cluster=NAME     GKE Cluster Name (default: online-boutique-<hash>)"
   echo "  --namespace=NAME   K8s Namespace (default: demo)"
 }
 
@@ -63,6 +63,12 @@ done
 
 # Restore non-common arguments to $@
 set -- ${TEMP_ARGS[@]+"${TEMP_ARGS[@]}"}
+
+# Calculate unique cluster name based on project ID hash if not explicitly set
+if [[ -z "$CLUSTER_NAME" ]] && [[ -n "$PROJECT_ID" ]]; then
+  PROJECT_HASH=$(echo -n "$PROJECT_ID" | md5sum 2>/dev/null | cut -c1-6 || echo -n "$PROJECT_ID" | md5 2>/dev/null | cut -c1-6 || echo "demo")
+  CLUSTER_NAME="online-boutique-${PROJECT_HASH}"
+fi
 
 # Validation
 if [[ -z "$PROJECT_ID" ]]; then

@@ -20,7 +20,7 @@ set -euo pipefail
 # Default values
 PROJECT_ID=$(gcloud config get-value project)
 REGION="us-central1"
-CLUSTER_NAME="online-boutique-demo"
+CLUSTER_NAME=""
 NAMESPACE="online-boutique-demo"
 ENABLE_MEMORYSTORE="false"
 DEMO_DIR="microservices-demo"
@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --project=ID       GCP Project ID (default: active gcloud project)"
       echo "  --region=NAME      GCP Region (default: us-central1)"
-      echo "  --cluster=NAME     GKE Cluster Name (default: online-boutique-demo)"
+      echo "  --cluster=NAME     GKE Cluster Name (default: online-boutique-<hash>)"
       echo "  --namespace=NAME   K8s Namespace (default: online-boutique-demo)"
       echo "  --memorystore=BOOL Use Memorystore (default: false)"
       exit 0
@@ -66,6 +66,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Calculate unique cluster name based on project ID hash if not explicitly set
+if [[ -z "$CLUSTER_NAME" ]] && [[ -n "$PROJECT_ID" ]]; then
+  PROJECT_HASH=$(echo -n "$PROJECT_ID" | md5sum 2>/dev/null | cut -c1-6 || echo -n "$PROJECT_ID" | md5 2>/dev/null | cut -c1-6 || echo "demo")
+  CLUSTER_NAME="online-boutique-${PROJECT_HASH}"
+fi
 
 echo "--------------------------------------------------------"
 echo "🚀 Deploying Online Boutique Demo (Service Mesh Default)"
